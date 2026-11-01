@@ -388,7 +388,7 @@ const normaliserPoules = (raw) => {
   }));
 };
 
-// CORRECTIF #2 : Sauvegarde Firebase granulaire par clé unique (id de la poule) pour éliminer tout risque d'écrasement par décalage d'index
+// Sauvegarde Firebase granulaire par clé unique (id de la poule) pour éliminer tout risque d'écrasement par décalage d'index
 const convertirListePoulesEnMapFirebase = (liste) => {
   const mapObj = {};
   (liste || []).forEach(p => {
@@ -412,32 +412,43 @@ const sauvegarderPouleUnique = async (pouleModifiee) => {
   } catch (e) {}
 };
 
-// Calcul officiel des points de classement FFJudo pour un combat terminé (Plafond strict à 10 pts et seul le vainqueur marque)
+// Calcul des points de classement selon le barème officiel du tournoi :
+// Ippon = 10 pts | Waza-ari = 7 pts | Yuko = 3 pts | Hansoku-make & Décision = 1 pt | Défaite = 0 pt
 const calculerScoresClassementCombat = (c1, c2) => {
+  // Disqualification (3 Shidos = Hansoku-make = 1 pt pour le vainqueur, 0 pt pour le perdant)
+  if ((c1.shido || 0) >= 3 && (c2.shido || 0) < 3) {
+    return { scoreC1: 0, scoreC2: 1, vainqueurDecision: c2.nom };
+  }
+  if ((c2.shido || 0) >= 3 && (c1.shido || 0) < 3) {
+    return { scoreC1: 1, scoreC2: 0, vainqueurDecision: c1.nom };
+  }
+
   const c1Ippon = (c1.ippon || 0) > 0;
   const c2Ippon = (c2.ippon || 0) > 0;
 
+  // Victoire par Ippon = 10 pts
   if (c1Ippon && !c2Ippon) return { scoreC1: 10, scoreC2: 0 };
   if (c2Ippon && !c1Ippon) return { scoreC1: 0, scoreC2: 10 };
 
+  // Victoire par Waza-ari = 7 pts
   if ((c1.waza || 0) !== (c2.waza || 0)) {
     return (c1.waza || 0) > (c2.waza || 0)
       ? { scoreC1: 7, scoreC2: 0 }
       : { scoreC1: 0, scoreC2: 7 };
   }
 
+  // Victoire par Yuko = 3 pts
   if ((c1.yuko || 0) !== (c2.yuko || 0)) {
     return (c1.yuko || 0) > (c2.yuko || 0)
-      ? { scoreC1: 1, scoreC2: 0 }
-      : { scoreC1: 0, scoreC2: 1 };
+      ? { scoreC1: 3, scoreC2: 0 }
+      : { scoreC1: 0, scoreC2: 3 };
   }
 
+  // Victoire aux pénalités (moins de Shidos en fin de temps) = 1 pt
   if ((c1.shido || 0) !== (c2.shido || 0)) {
-    return {
-      scoreC1: 0,
-      scoreC2: 0,
-      vainqueurDecision: (c1.shido || 0) < (c2.shido || 0) ? c1.nom : c2.nom
-    };
+    return (c1.shido || 0) < (c2.shido || 0)
+      ? { scoreC1: 1, scoreC2: 0, vainqueurDecision: c1.nom }
+      : { scoreC1: 0, scoreC2: 1, vainqueurDecision: c2.nom };
   }
 
   return { scoreC1: 0, scoreC2: 0 };
@@ -552,13 +563,18 @@ const toggleQrCodeActif = async () => {
   } catch (e) {}
 };
 
+// Arrête aussi un Osaekomi éventuellement en cours lorsque l'arbitre annonce MATTE (Pause)
 const toggleTimer = () => {
   if (matchActif.value?.vainqueur) return;
-  if (chronoEnCours.value) arreterChrono();
-  else demarrerChrono();
+  if (chronoEnCours.value) {
+    arreterChrono();
+    if (osaekomiActif.value) toketa();
+  } else {
+    demarrerChrono();
+  }
 };
 
-// CORRECTIF #3 : Si un Osaekomi est en cours quand le chrono principal atteint 00:00, le gong sonne mais l'Osaekomi continue jusqu'à Ippon ou Toketa
+// Si un Osaekomi est en cours quand le chrono principal atteint 00:00, le gong sonne mais l'Osaekomi continue jusqu'à Ippon ou Toketa
 const demarrerChrono = () => {
   if (chronoEnCours.value || matchActif.value?.vainqueur) return;
   chronoEnCours.value = true;
@@ -707,7 +723,7 @@ const recalculerCombatsPoule = async (poule) => {
   await sauvegarderPouleUnique(poule);
 };
 
-// CORRECTIF #6 : Protection si la poule a déjà commencé des combats sur le tapis
+// Protection si la poule a déjà commencé des combats sur le tapis
 const retirerCombattantAbsent = async (poule, combattantIdUnique) => {
   if (poule.combattants.length <= 2) {
     alert("Impossible de retirer ce combattant : une poule doit compter au moins 2 combattants !");
@@ -752,7 +768,7 @@ const ouvrirModalAjoutRetardataire = (poule) => {
   nouveauRetardataire.value = { nom: '', club: poule.combattants[0]?.club || 'USPV Judo', sexe: poule.sexe || 'M', poids: '' };
 };
 
-// CORRECTIF #7 : Le retardataire créé à la volée en Chambre d'Appel est aussi sauvegardé dans la liste générale `judokas`
+// Le retardataire créé à la volée en Chambre d'Appel est aussi sauvegardé dans la liste générale `judokas`
 const validerAjoutRetardataire = async () => {
   const poule = pouleEnAjoutRetardataire.value;
   if (!poule) return;
@@ -946,25 +962,18 @@ const getFileAttentePourTapis = (tapisNum) => {
   return fileMixte;
 };
 
-// Sélectionne le prochain combat en garantissant l'alternance entre les poules actives
+// Sélectionne le prochain combat en garantissant qu'une même poule n'enchaîne jamais 2 combats si une autre poule active a des combats en attente
 const trouverProchainCombatAlternance = (tapisCible, pouleIdActuelle, combatIdActuel) => {
   const file = getFileAttentePourTapis(tapisCible);
   const enAttente = file.filter(f => f.combat.statut !== 'termine' && !(f.pouleId === pouleIdActuelle && f.combat.id === combatIdActuel));
   if (enAttente.length === 0) return null;
 
+  // S'il existe au moins un combat en attente dans une AUTRE poule sur ce tapis, on alterne obligatoirement vers l'autre poule
   const autrePoule = enAttente.filter(f => f.pouleId !== pouleIdActuelle);
   if (autrePoule.length > 0) {
-    const minTourGlobal = Math.min(...enAttente.map(f => f.tourNum));
-    const candidatAutrePoule = autrePoule.find(f => f.tourNum <= minTourGlobal);
-    if (candidatAutrePoule) return candidatAutrePoule;
+    return autrePoule.reduce((meilleur, courant) => (courant.tourNum < meilleur.tourNum ? courant : meilleur), autrePoule[0]);
   }
 
-  const currentIndex = file.findIndex(f => f.pouleId === pouleIdActuelle && f.combat.id === combatIdActuel);
-  if (currentIndex !== -1) {
-    for (let i = currentIndex + 1; i < file.length; i++) {
-      if (file[i].combat.statut !== 'termine') return file[i];
-    }
-  }
   return enAttente[0];
 };
 
@@ -1028,7 +1037,7 @@ const startOsae = (num) => {
   syncFirebaseMatch();
 };
 
-// CORRECTIF #3 : Si le temps réglementaire était déjà écoulé (00:00) pendant l'Osaekomi et qu'on clique sur Toketa avant l'Ippon, on déclenche la fin du match
+// Si le temps réglementaire était déjà écoulé (00:00) pendant l'Osaekomi et qu'on clique sur Toketa avant l'Ippon, on déclenche la fin du match
 const toketa = () => {
   const etaitActif = osaekomiActif.value;
   osaekomiActif.value = false;
@@ -1042,17 +1051,25 @@ const toketa = () => {
   }
 };
 
+// Débloque intégralement les compteurs (Ippon ou 3ème Shido) si l'opérateur clique sur "Annuler la décision"
 const annulerVictoireEnCours = async () => {
   if (!matchActif.value) return;
   matchActif.value.vainqueur = null;
   matchActif.value.clubVainqueur = null;
   matchActif.value.egaliteTotale = false;
 
+  if (matchActif.value.c1.ippon > 0) matchActif.value.c1.ippon = 0;
+  if (matchActif.value.c2.ippon > 0) matchActif.value.c2.ippon = 0;
+  if (matchActif.value.c1.shido >= 3) matchActif.value.c1.shido = 2;
+  if (matchActif.value.c2.shido >= 3) matchActif.value.c2.shido = 2;
+
   const poule = poules.value.find(p => p.id === matchActif.value.pouleId);
   if (poule && poule.combats) {
     const combat = poule.combats.find(c => c.id === matchActif.value.combatId);
     if (combat) {
       combat.statut = 'attente';
+      combat.scoreC1 = 0;
+      combat.scoreC2 = 0;
       delete combat.vainqueurDecision;
       poule.termineTimestamp = null;
       poule.prepareMedaille = false;
@@ -1062,7 +1079,7 @@ const annulerVictoireEnCours = async () => {
   await syncFirebaseMatch();
 };
 
-// CORRECTIF #4 : Utilisation du barème officiel FFJudo plafonné (10 / 7 / 1 / 0) lors de la victoire
+// Utilisation du barème officiel du tournoi : Ippon = 10 pts | Waza-ari = 7 pts | Yuko = 3 pts | Hansoku-make & Décision = 1 pt | Défaite = 0 pt
 const declencherVictoire = async (nomVainqueur, clubVainqueur, estEgalite = false, parDecision = false, parDisqualification = false) => {
   if (!matchActif.value) return;
   if (matchActif.value.vainqueur && !matchActif.value.egaliteTotale) return;
@@ -1082,13 +1099,10 @@ const declencherVictoire = async (nomVainqueur, clubVainqueur, estEgalite = fals
         combat.scoreC1 = 0;
         combat.scoreC2 = 0;
         delete combat.vainqueurDecision;
-      } else if (parDisqualification) {
-        combat.scoreC1 = matchActif.value.c1.nom === nomVainqueur ? 10 : 0;
-        combat.scoreC2 = matchActif.value.c2.nom === nomVainqueur ? 10 : 0;
-        combat.vainqueurDecision = nomVainqueur;
-      } else if (parDecision) {
-        combat.scoreC1 = 0;
-        combat.scoreC2 = 0;
+      } else if (parDisqualification || parDecision) {
+        // Hansoku-make (3 shidos) ou Décision arbitrale = 1 pt pour le vainqueur, 0 pt pour le perdant
+        combat.scoreC1 = matchActif.value.c1.nom === nomVainqueur ? 1 : 0;
+        combat.scoreC2 = matchActif.value.c2.nom === nomVainqueur ? 1 : 0;
         combat.vainqueurDecision = nomVainqueur;
       } else {
         const resScores = calculerScoresClassementCombat(matchActif.value.c1, matchActif.value.c2);
@@ -1496,11 +1510,10 @@ const getCategorieOfficiellePoids = (catAge, sexe, poids) => {
   return `${Math.floor(poids / 5) * 5} kg cat`;
 };
 
-// CORRECTIF #1 : Protection intégrale des poules déjà envoyées sur un tapis (tapis > 0) lors de la génération d'une catégorie
+// Protection intégrale des poules déjà envoyées sur un tapis (tapis > 0) lors de la génération d'une catégorie
 const genererPoulesCategorie = async () => {
   const catCible = categorieAGenerer.value;
 
-  // On conserve toutes les poules d'autres catégories ET toutes les poules déjà envoyées sur un tapis (tapis > 0)
   let poulesConservees = [];
   if (catCible !== 'TOUTES') {
     poulesConservees = poules.value.filter(p => {
@@ -1520,7 +1533,6 @@ const genererPoulesCategorie = async () => {
     }
   }
 
-  // Identifiants des combattants déjà engagés sur un tapis dans les poules conservées
   const idsDejaSurTapis = new Set();
   poulesConservees.forEach(p => {
     (p.combattants || []).forEach(c => {
@@ -1669,7 +1681,6 @@ const genererPoulesCategorie = async () => {
       poule.sort((a, b) => (clubsCount[b.club] - clubsCount[a.club]) || a.club.localeCompare(b.club) || (a.poids - b.poids));
     });
 
-    // Numérotation continue des groupes si certaines poules de cette clé sont déjà sur tapis
     const nbDejaSurTapisMemeCle = poulesConservees.filter(p => p.nom && p.nom.startsWith(cle)).length;
 
     partitions.forEach((combattants, pIdx) => {
@@ -1969,7 +1980,7 @@ const validerEtSuivantManuel = async () => {
   await passerAuCombatSuivant();
 };
 
-// CORRECTIF #5 : Départage FFJudo complet en 4 critères (1. Victoires ➔ 2. Points ➔ 3. Confrontation directe ➔ 4. Poids le plus léger)
+// Départage FFJudo complet en 4 critères (1. Victoires ➔ 2. Points ➔ 3. Confrontation directe ➔ 4. Poids le plus léger)
 const calculerClassementPoule = (poule) => {
   if (!poule || !poule.combattants) return [];
   const combattantsArray = Array.isArray(poule.combattants) ? poule.combattants : Object.values(poule.combattants);
@@ -2351,7 +2362,7 @@ const genererHtmlFeuilleTableDeMarque = (poule, dateDuJour) => {
       </table>
 
       <div class="section-heading" style="margin-top: 10px;">
-        2. ORDRE OFFICIEL DES COMBATS & MARQUAGE (IPPON = 10 pts | WAZA-ARI = 7 pts | YUKO = 1 pt)
+        2. ORDRE OFFICIEL DES COMBATS & MARQUAGE (IPPON = 10 pts | WAZA-ARI = 7 pts | YUKO = 3 pts | HANSOKU-MAKE / DÉCISION = 1 pt)
       </div>
       <table class="fights-table">
         <thead>
